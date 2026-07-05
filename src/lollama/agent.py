@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import re
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 
@@ -64,16 +65,35 @@ class Agent:
         background_notify: BackgroundNotify | None = None,
     ) -> AsyncIterator[dict]:
         user_text = _last_user_text(messages)
+        is_current_time_query = _is_current_time_query(user_text)
         prompt, recalled = self._build_messages(messages, user_text)
         if recalled:
             event = self.make_status("memory_recall", count=recalled)
             if event is not None:
                 yield event
         tool_specs = self.tools.specs() if self.cfg.tools.enabled and len(self.tools) else None
+        tool_names = self.tools.names() if self.cfg.tools.enabled else []
+        logger.info(
+            "agent request user=%r current_time_query=%s tools_enabled=%s tool_count=%d tool_names=%s recalled=%d inject_time=%s",
+            user_text[:120],
+            is_current_time_query,
+            self.cfg.tools.enabled,
+            len(tool_specs or []),
+            tool_names,
+            recalled,
+            self.cfg.agent.inject_time,
+        )
         full_text: list[str] = []
+        used_tool_names: list[str] = []
 
         for round_index in range(self.cfg.tools.max_rounds + 1):
             allow_tools = tool_specs if round_index < self.cfg.tools.max_rounds else None
+            logger.debug(
+                "agent llm round=%d allow_tools=%s tool_names=%s",
+                round_index + 1,
+                allow_tools is not None,
+                tool_names if allow_tools is not None else [],
+            )
             event = self.make_status("llm_request", round=round_index + 1)
             if event is not None:
                 yield event
@@ -104,6 +124,7 @@ class Agent:
             )
             for index, call in enumerate(pending_calls):
                 name = call["name"]
+                used_tool_names.append(name)
                 brief = _brief_args(call["arguments"])
                 event = self.make_status("tool_start", name=name, label=self.tool_label(name), arguments=brief)
                 if event is not None:
@@ -132,6 +153,19 @@ class Agent:
             logger.warning("tool loop hit max_rounds=%d without final answer", self.cfg.tools.max_rounds)
 
         assistant_text = "".join(full_text).strip()
+        if is_current_time_query and "get_current_time" not in used_tool_names:
+            logger.warning(
+                "current time query completed without get_current_time tool user=%r assistant=%r tools_available=%s",
+                user_text[:120],
+                assistant_text[:200],
+                tool_names,
+            )
+        elif is_current_time_query:
+            logger.info(
+                "current time query used tools=%s assistant=%r",
+                used_tool_names,
+                assistant_text[:200],
+            )
         self._write_back_memory(user_text, assistant_text, background_notify)
         yield {"type": "done", "text": assistant_text}
 
@@ -261,7 +295,10 @@ class Agent:
             system_parts.append(f"当前时间：{time.strftime('%Y-%m-%d %H:%M:%S %A')}")
         recalled = 0
         if self.memory is not None and self.cfg.agent.inject_memory and user_text:
-            pairs = self.memory.retrieve(user_text)
+            if _is_current_time_query(user_text):
+                pairs = self.memory.retrieve(_current_time_memory_query(user_text), layers=("procedural",))
+            else:
+                pairs = self.memory.retrieve(user_text)
             recalled = len(pairs)
             context = self.memory.format_context(pairs)
             if context:
@@ -284,6 +321,8 @@ class Agent:
         background_notify: BackgroundNotify | None,
     ) -> None:
         if self.memory is None or not user_text:
+            return
+        if _is_current_time_query(user_text):
             return
         try:
             self.memory.record_turn(user_text, assistant_text)
@@ -328,6 +367,20 @@ def _last_user_text(messages: list[dict]) -> str:
         if message.get("role") == "user":
             return str(message.get("content") or "").strip()
     return ""
+
+
+_CURRENT_TIME_QUERY_RE = re.compile(
+    r"(现在|当前|此刻|这会儿|今天|今日).{0,8}(几点|几时|时间|日期|几号|星期几|周几)|"
+    r"(几点了|几点钟|报时|查.*时间|看.*时间)"
+)
+
+
+def _is_current_time_query(user_text: str) -> bool:
+    return bool(_CURRENT_TIME_QUERY_RE.search(user_text))
+
+
+def _current_time_memory_query(user_text: str) -> str:
+    return f"{user_text} 当前时间 日期 星期 几点 北京时间"
 
 
 def _brief_args(arguments: str) -> str:

@@ -144,7 +144,7 @@ async def test_chat_with_text_uses_server_prompt_and_working_history(tmp_path: P
     system_texts = [message["content"] for message in second_prompt if message["role"] == "system"]
     user_texts = [message["content"] for message in second_prompt if message["role"] == "user"]
     assistant_texts = [message["content"] for message in second_prompt if message["role"] == "assistant"]
-    assert any("中文智能助手" in text for text in system_texts)
+    assert any("工具纪律" in text for text in system_texts)
     assert all("简短回答" not in text for text in system_texts)
     assert user_texts == ["第一句", "第二句"]
     assert assistant_texts == ["好。"]

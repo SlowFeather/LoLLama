@@ -68,7 +68,7 @@ class MemoryManager:
     def load(self) -> None:
         self._items = {layer: [] for layer in PERSISTED_LAYERS}
         try:
-            data = json.loads(self._file.read_text(encoding="utf-8"))
+            data = json.loads(self._file.read_text(encoding="utf-8-sig"))
         except FileNotFoundError:
             return
         except Exception:

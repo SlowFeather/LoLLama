@@ -41,15 +41,17 @@ class UpstreamConfig:
 @dataclass(slots=True)
 class AgentConfig:
     system_prompt: str = (
-        "你是一个运行在本地电脑上的中文智能助手，拥有分层记忆和工具调用能力。"
-        "回答自然、简洁、适合直接朗读，通常 1 到 2 句话。"
-        "不要 Markdown、表情、长列表或客套铺垫；除非用户明确要求展开，否则直接给结论。"
-        "需要外部信息或操作文件时使用工具，不要凭空编造。"
+        "你是运行在本地电脑上的中文助手，回答自然简洁，通常 1 到 2 句话，适合直接朗读；"
+        "不要 Markdown、表情、长列表或客套铺垫，除非用户明确要求展开。"
+        "工具纪律：需要当前/实时信息、计算、记忆检索或电脑文件内容时先调用工具，不要猜测或编造；"
+        "用户询问当前时间、日期或星期时，必须调用 get_current_time 工具，工具结果优先于记忆和常识；"
+        "工具结果足够时直接回答，不重复无关细节；结果不足时简短说明限制。"
+        "只有用户明确要求写入时才调用 write_file 或 memory_save；其他文件操作优先使用只读工具。"
     )
     # 客户端只发纯文本时，服务端自己维护的工作记忆轮数
     max_history_turns: int = 8
     inject_memory: bool = True
-    inject_time: bool = True
+    inject_time: bool = False
 
 
 @dataclass(slots=True)

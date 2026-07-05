@@ -103,6 +103,17 @@ def test_persistence_roundtrip(tmp_path: Path) -> None:
     assert reloaded.items("core")[0].text == "用户名字叫小明"
 
 
+def test_load_accepts_utf8_bom_json(tmp_path: Path) -> None:
+    manager = make_manager(tmp_path)
+    manager.add("procedural", "用户希望被告知时间时显示为北京时间", importance=0.9)
+    path = tmp_path / f"{manager.cfg.user_id}.json"
+    path.write_text(path.read_text(encoding="utf-8"), encoding="utf-8-sig")
+
+    reloaded = MemoryManager(manager.cfg, tmp_path)
+    assert reloaded.stats()["procedural"] == 1
+    assert reloaded.items("procedural")[0].text == "用户希望被告知时间时显示为北京时间"
+
+
 def test_clear(tmp_path: Path) -> None:
     manager = make_manager(tmp_path)
     manager.add("semantic", "用户住在上海")

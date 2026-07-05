@@ -50,7 +50,7 @@ def build_registry(cfg: ToolsConfig, *, workspace_dir: str | Path, memory: Memor
                 name="get_current_time",
                 description="获取当前本地日期和时间",
                 parameters={"type": "object", "properties": {}},
-                handler=lambda args: time.strftime("%Y-%m-%d %H:%M:%S %A"),
+                handler=lambda args: _current_time(),
             )
         )
     if b.calculator:
@@ -224,6 +224,19 @@ def build_registry(cfg: ToolsConfig, *, workspace_dir: str | Path, memory: Memor
 
 
 # ------------------------------------------------------------------ handlers
+
+
+def _current_time() -> str:
+    result = time.strftime("%Y-%m-%d %H:%M:%S %A")
+    logger.info(
+        "get_current_time result=%s epoch=%.3f tzname=%s timezone=%s daylight=%s",
+        result,
+        time.time(),
+        time.tzname,
+        time.timezone,
+        time.daylight,
+    )
+    return result
 
 _BIN_OPS = {
     ast.Add: operator.add,

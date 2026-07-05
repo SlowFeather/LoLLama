@@ -104,6 +104,34 @@ async def test_memory_injected_into_system_prompt(tmp_path: Path) -> None:
     await agent.close()
 
 
+async def test_time_query_can_use_time_tool_without_injected_time(tmp_path: Path) -> None:
+    upstream = FakeUpstream(tool_name="get_current_time", reply="现在是北京时间21点05分。")
+    tool = Tool(
+        name="get_current_time",
+        description="time",
+        parameters={"type": "object", "properties": {}},
+        handler=lambda args: "2026-07-05 21:05:00 Sunday",
+    )
+    agent = make_agent(tmp_path, upstream, tool=tool)
+    agent.memory.add("semantic", "用户之前问过现在几点；当时是北京时间08点00分", importance=0.9)
+    agent.memory.add("procedural", "用户希望被告知时间时显示为北京时间", importance=0.9)
+
+    events = await collect(agent, "帮我查一下现在是几点")
+
+    assert any(e["type"] == "tool" and e["name"] == "get_current_time" for e in events)
+    assert events[-1]["type"] == "done"
+    assert "北京时间" in events[-1]["text"]
+    system_prompt = upstream.calls[0][0]["content"]
+    assert "当前时间：" not in system_prompt
+    assert "必须调用 get_current_time 工具" in system_prompt
+    assert "工具结果优先于记忆和常识" in system_prompt
+    assert "只有用户明确要求写入时才调用 write_file 或 memory_save" in system_prompt
+    assert "北京时间08点00分" not in system_prompt
+    assert "用户希望被告知时间时显示为北京时间" in system_prompt
+    assert agent.memory.stats()["episodic"] == 0
+    await agent.close()
+
+
 async def test_extraction_writes_layered_memories(tmp_path: Path) -> None:
     extraction = '[{"layer":"core","text":"用户叫小明","importance":0.9},{"layer":"procedural","text":"用户喜欢简短回答","importance":0.8}]'
     upstream = FakeUpstream(reply="好的小明。", extraction=extraction)
