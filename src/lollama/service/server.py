@@ -190,7 +190,7 @@ class RealtimeLlmService:
         if messages is not None:
             if not isinstance(messages, list) or not all(isinstance(m, dict) for m in messages):
                 raise ValueError("chat.messages must be a list of objects")
-        elif not text:
+        if messages is None and not text:
             raise ValueError("chat requires 'messages' or non-empty 'text'")
         request_id = str(payload.get("request_id") or uuid.uuid4().hex[:8])
 
@@ -199,7 +199,14 @@ class RealtimeLlmService:
         conn.request_id = request_id
         conn.task = asyncio.create_task(self._run_chat(websocket, conn, request_id, messages, text))
 
-    async def _run_chat(self, websocket, conn: _Connection, request_id: str, messages: list[dict] | None, text: str) -> None:
+    async def _run_chat(
+        self,
+        websocket,
+        conn: _Connection,
+        request_id: str,
+        messages: list[dict] | None,
+        text: str,
+    ) -> None:
         if messages is None:
             conn.history.append({"role": "user", "content": text})
             _trim_history(conn.history, self.cfg.agent.max_history_turns)

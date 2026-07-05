@@ -15,8 +15,10 @@ class SlowFakeUpstream:
     def __init__(self, reply: str = "你好，我在。", delay: float = 0.0):
         self.reply = reply
         self.delay = delay
+        self.calls: list[list[dict]] = []
 
     async def stream_chat(self, messages, *, tools=None):
+        self.calls.append(list(messages))
         for ch in self.reply:
             if self.delay:
                 await asyncio.sleep(self.delay)
@@ -107,6 +109,45 @@ async def test_chat_with_bare_text_keeps_server_side_history(tmp_path: Path) -> 
                     pass
         # 服务端工作记忆里累计了两轮 user+assistant
         assert service._requests_served == 2
+
+
+async def test_chat_with_text_uses_server_prompt_and_working_history(tmp_path: Path) -> None:
+    async with running_service(tmp_path, reply="好。") as (service, url):
+        async with websockets.connect(url) as ws:
+            await ws.send(
+                json.dumps(
+                    {
+                        "type": "chat",
+                        "request_id": "a",
+                        "text": "第一句",
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            while (await _recv_json(ws))["type"] != "done":
+                pass
+
+            await ws.send(
+                json.dumps(
+                    {
+                        "type": "chat",
+                        "request_id": "b",
+                        "text": "第二句",
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            while (await _recv_json(ws))["type"] != "done":
+                pass
+
+    second_prompt = service.upstream.calls[1]
+    system_texts = [message["content"] for message in second_prompt if message["role"] == "system"]
+    user_texts = [message["content"] for message in second_prompt if message["role"] == "user"]
+    assistant_texts = [message["content"] for message in second_prompt if message["role"] == "assistant"]
+    assert any("中文智能助手" in text for text in system_texts)
+    assert all("简短回答" not in text for text in system_texts)
+    assert user_texts == ["第一句", "第二句"]
+    assert assistant_texts == ["好。"]
 
 
 async def test_new_chat_cancels_previous_one(tmp_path: Path) -> None:
