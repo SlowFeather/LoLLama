@@ -1,0 +1,127 @@
+# LoLLama —— 全双工本地 LLM 智能体服务（分层记忆 + 工具调用）
+# ChatCaht 通过 WebSocket 把文本发过来，LoLLama 注入记忆、按需调用工具、
+# 向 LM Studio 请求生成，并把回复流式发回。
+
+paths:
+  artifacts_dir: artifacts
+  logs_dir: artifacts/logs
+  memory_dir: artifacts/memory      # 记忆持久化目录（每个 user_id 一个 JSON）
+  workspace_dir: artifacts/workspace # 文件类工具的沙箱目录
+
+service:
+  host: 127.0.0.1
+  port: 8801
+  ws_path: /v1/llm/ws
+  max_clients: 8
+
+upstream: # OpenAI 兼容上游（LM Studio）
+  base_url: http://127.0.0.1:1234/v1
+  model: qwen/qwen3.5-9b
+  api_key: lm-studio
+  temperature: 0.6
+  max_tokens: 512
+  timeout_sec: 120
+  # qwen3.5 是思考型模型：不关思考的话 content 一直为空、首字延迟 30s+
+  extra_body:
+    reasoning_effort: none
+
+agent:
+  system_prompt: >
+    你是一个运行在本地电脑上的中文智能助手，拥有分层记忆和工具调用能力。
+    回答自然、简洁。需要外部信息或操作文件时使用工具，不要凭空编造。
+  max_history_turns: 8   # 客户端只发纯文本时，服务端维护的工作记忆轮数
+  inject_memory: true    # 生成前检索长期记忆注入 system 提示
+  inject_time: true      # 注入当前时间
+
+# ============ 5 层记忆系统（参考 MemoryOS 的分层 + 热度晋升 + 遗忘设计） ============
+# 第 1 层 工作记忆   —— 当前对话窗口（layers.working_max_turns）
+# 第 2 层 情景记忆   —— 每轮对话事件，衰减最快 (episodic)
+# 第 3 层 语义记忆   —— 用户与世界的事实 (semantic)
+# 第 4 层 程序性记忆 —— 偏好与做事方式 (procedural)
+# 第 5 层 核心画像   —— 稳定的用户画像，默认永不遗忘 (core)
+memory:
+  enabled: true
+  user_id: default
+  layers:
+    working_max_turns: 8
+    episodic:
+      capacity: 300          # 层容量，超出时淘汰最弱记忆
+      half_life_hours: 72    # 强度半衰期（小时）；0 = 永不衰减
+      min_strength: 0.15     # 有效强度低于该值即被遗忘
+    semantic:
+      capacity: 500
+      half_life_hours: 720   # 30 天
+      min_strength: 0.10
+    procedural:
+      capacity: 200
+      half_life_hours: 2160  # 90 天
+      min_strength: 0.05
+    core:
+      capacity: 64
+      half_life_hours: 0     # 永不衰减
+      min_strength: 0.0
+  retrieval:
+    top_k: 6                 # 每次注入的最大记忆条数
+    min_score: 0.08          # 低于该分不注入
+    similarity_weight: 0.5   # 字面相关度权重
+    importance_weight: 0.25  # 重要度权重
+    strength_weight: 0.25    # 记忆强度（含新近度）权重
+  promotion:
+    enabled: true
+    episodic_hits_to_semantic: 3  # 情景记忆被命中 N 次后晋升为语义记忆
+    reinforce_on_recall: 0.35     # 每次命中的强度增益（间隔重复式巩固）
+  forgetting:
+    enabled: true
+    sweep_interval_sec: 600  # 周期性遗忘清理间隔（秒）
+  extraction:                # 每轮对话后用 LLM 后台提炼 semantic/procedural/core 记忆
+    enabled: true
+    min_turn_chars: 6        # 用户输入短于该长度不提炼
+    max_items_per_turn: 4
+    timeout_sec: 30
+
+# ============ 工具调用（类 Claude Code 的本地工具箱） ============
+tools:
+  enabled: true
+  max_rounds: 4              # 单次回复最多的工具调用轮数
+  builtin:
+    time: true               # get_current_time
+    calculator: true         # calculator
+    read_file: true          # read_file（限 workspace_dir 内）
+    write_file: true         # write_file（限 workspace_dir 内）
+    list_dir: true           # list_dir（限 workspace_dir 内）
+    memory_search: true      # 模型主动检索长期记忆
+    memory_save: true        # 模型主动写入长期记忆
+  shell:
+    enabled: false           # 谨慎开启：允许模型执行本地命令
+    timeout_sec: 20
+
+# ============ 状态钩子（供 ChatCaht 等客户端向用户播报执行进度） ============
+# 请求生命周期各阶段发送 agent_status 事件：
+#   accepted        请求受理           memory_recall   召回了相关记忆
+#   llm_request     开始请求模型       llm_waiting     模型迟迟没出首字（心跳）
+#   llm_first_token 首字产出           tool_start      开始调用工具
+#   tool_waiting    工具执行较慢（心跳） tool_done/tool_error 工具完成/出错
+#   memory_extracted 后台记忆提炼完成   canceled/error  被打断/出错
+status:
+  enabled: true
+  llm_waiting_after_sec: 3     # 等首字超过该秒数后播报 llm_waiting；0 不播报
+  llm_waiting_repeat_sec: 15   # 之后每隔该秒数重复；0 只播报一次
+  tool_waiting_after_sec: 5    # 工具执行超过该秒数后播报 tool_waiting；0 不播报
+  tool_waiting_repeat_sec: 15
+  tool_labels: {}              # 覆盖工具播报名，如 {calculator: 按计算器}
+  announce:                    # 各阶段播报文案；留空该阶段不播报
+    accepted: ""
+    memory_recall: ""
+    llm_request: ""
+    llm_waiting: "让我想想。"
+    llm_first_token: ""
+    tool_start: "我{label}。"        # {label}=工具播报名 {name}=工具原名
+    tool_waiting: "还在处理，稍等。"
+    tool_done: ""
+    tool_error: "工具出了点问题，我再想想。"
+    memory_extracted: ""             # 例如可设 "这个我记住了。"
+    canceled: ""
+    error: "抱歉，出了点问题。"
+
+runtime:
+  log_level: INFO
