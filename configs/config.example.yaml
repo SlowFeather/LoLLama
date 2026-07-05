@@ -88,9 +88,12 @@ tools:
   builtin:
     time: true               # get_current_time
     calculator: true         # calculator
-    read_file: true          # read_file（限 workspace_dir 内）
-    write_file: true         # write_file（限 workspace_dir 内）
-    list_dir: true           # list_dir（限 workspace_dir 内）
+    read_file: true          # read_file：读取文本文件，可指定行范围（限 workspace_dir 内）
+    list_dir: true           # list_dir：列目录（限 workspace_dir 内）
+    file_info: true          # file_info：查看文件/目录元信息，只读（限 workspace_dir 内）
+    find_files: true         # find_files：按名称关键词或 glob 查找文件，只读（限 workspace_dir 内）
+    search_files: true       # search_files：全文搜索文本文件，只读（限 workspace_dir 内）
+    write_file: true         # write_file：写入/覆盖文本文件（限 workspace_dir 内）
     memory_search: true      # 模型主动检索长期记忆
     memory_save: true        # 模型主动写入长期记忆
   shell:

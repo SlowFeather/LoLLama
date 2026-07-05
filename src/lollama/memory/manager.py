@@ -242,6 +242,10 @@ class MemoryManager:
         promo = self.cfg.promotion
         if not promo.enabled or item.layer != "episodic":
             return False
+        if _is_raw_turn_memory(item):
+            # 原始对话流水保留在情景层；语义/偏好/画像由提炼器或显式工具写入，
+            # 避免把“用户说：...；我回答：...”整段搬进 semantic。
+            return False
         if item.hits < promo.episodic_hits_to_semantic:
             return False
         if item not in self._items["episodic"]:
@@ -270,6 +274,10 @@ class MemoryManager:
 
 def _normalize(text: str) -> str:
     return "".join(text.split()).lower()
+
+
+def _is_raw_turn_memory(item: MemoryItem) -> bool:
+    return item.source == "turn" or item.text.startswith("用户说：") or "；我回答：" in item.text
 
 
 def _char_bigrams(text: str) -> set[str]:

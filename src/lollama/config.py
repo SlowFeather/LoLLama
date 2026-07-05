@@ -170,9 +170,12 @@ class BuiltinToolsConfig:
     time: bool = True
     calculator: bool = True
     read_file: bool = True
-    write_file: bool = True
     list_dir: bool = True
+    file_info: bool = True
+    find_files: bool = True
+    search_files: bool = True
     memory_search: bool = True
+    write_file: bool = True
     memory_save: bool = True
 
 

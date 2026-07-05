@@ -37,7 +37,7 @@ def test_duplicate_add_reinforces_instead_of_duplicating(tmp_path: Path) -> None
 def test_recall_reinforces_and_promotes_episodic(tmp_path: Path) -> None:
     manager = make_manager(tmp_path)
     manager.cfg.promotion.episodic_hits_to_semantic = 2
-    manager.add("episodic", "用户说：今天调试了 ChatCaht 的唤醒功能")
+    manager.add("episodic", "今天调试了 ChatCaht 的唤醒功能", source="summary")
 
     manager.retrieve("ChatCaht 唤醒")
     assert manager.stats() == {"episodic": 1, "semantic": 0, "procedural": 0, "core": 0}
@@ -46,6 +46,17 @@ def test_recall_reinforces_and_promotes_episodic(tmp_path: Path) -> None:
     assert manager.stats() == {"episodic": 0, "semantic": 1, "procedural": 0, "core": 0}
     promoted = manager.items("semantic")[0]
     assert promoted.hits == 2
+
+
+def test_raw_turn_memory_is_not_promoted_to_semantic(tmp_path: Path) -> None:
+    manager = make_manager(tmp_path)
+    manager.cfg.promotion.episodic_hits_to_semantic = 1
+    item = manager.record_turn("这个", "您好像没说完具体想问什么呀？")
+    assert item is not None
+
+    manager.retrieve("这个 想问")
+    assert manager.stats() == {"episodic": 1, "semantic": 0, "procedural": 0, "core": 0}
+    assert manager.items("episodic")[0].hits == 1
 
 
 def test_forgetting_removes_decayed_items(tmp_path: Path) -> None:

@@ -34,14 +34,27 @@ async def test_calculator(tmp_path: Path) -> None:
 
 async def test_file_tools_sandboxed(tmp_path: Path) -> None:
     registry, _ = make_registry(tmp_path)
-    assert "已写入" in await registry.call("write_file", '{"path": "notes/a.txt", "content": "你好"}')
-    assert await registry.call("read_file", '{"path": "notes/a.txt"}') == "你好"
+    content = "第一行\\n第二行关键词\\n第三行"
+    assert "已写入" in await registry.call("write_file", f'{{"path": "notes/a.txt", "content": "{content}"}}')
+    assert await registry.call("read_file", '{"path": "notes/a.txt"}') == content.replace("\\n", "\n")
+    partial = await registry.call("read_file", '{"path": "notes/a.txt", "start_line": 2, "max_lines": 1}')
+    assert "第 2-2 行" in partial
+    assert "第二行关键词" in partial
     listing = await registry.call("list_dir", "{}")
     assert "notes" in listing
+    info = await registry.call("file_info", '{"path": "notes/a.txt"}')
+    assert "type: file" in info
+    assert "lines: 3" in info
+    found = await registry.call("find_files", '{"pattern": "*.txt"}')
+    assert "notes/a.txt" in found
+    searched = await registry.call("search_files", '{"query": "关键词"}')
+    assert "notes/a.txt:2" in searched
 
     escaped = await registry.call("read_file", '{"path": "../outside.txt"}')
     assert escaped.startswith("错误")
     escaped = await registry.call("write_file", '{"path": "..\\\\evil.txt", "content": "x"}')
+    assert escaped.startswith("错误")
+    escaped = await registry.call("search_files", '{"path": "../", "query": "x"}')
     assert escaped.startswith("错误")
 
 
