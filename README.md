@@ -59,6 +59,14 @@ uv run lollama text "你好，记住我喜欢简短的回答"
 uv run lollama memory dump          # 查看记忆内容
 ```
 
+## 日志与记忆文件
+
+- 文件日志：`artifacts/logs/lollama.log`（滚动 10MB × 5 份，UTF-8），格式与 ChatCaht 全家统一：
+  `2026-07-06 10:09:29,554 INFO lollama.service.server: 消息`
+- 记忆持久化：`artifacts/memory/{user_id}.json`，按 4 层（episodic 情景 / semantic 事实 /
+  procedural 偏好 / core 画像）存储，含强度、热度与访问时间；工作记忆只在内存中
+- ChatCaht Dashboard（`ChatCaht/dashboard/`）会实时展示这些记忆条目与当前有效强度
+
 ## WebSocket 协议
 
 ```jsonc
