@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 
@@ -29,9 +30,79 @@ def test_duplicate_add_reinforces_instead_of_duplicating(tmp_path: Path) -> None
     manager = make_manager(tmp_path)
     first = manager.add("semantic", "用户喜欢喝咖啡")
     second = manager.add("semantic", "用户 喜欢 喝咖啡")
+    third = manager.add("semantic", "用户喜欢喝咖啡。")
     assert first is second
+    assert first is third
     assert manager.stats()["semantic"] == 1
-    assert second.strength > 1.0
+    assert third.strength > 1.0
+
+
+def test_similar_add_reinforces_without_swallowing_conflicts(tmp_path: Path) -> None:
+    manager = make_manager(tmp_path)
+    first = manager.add("semantic", "用户喜欢吃苹果")
+    similar = manager.add("semantic", "用户喜欢吃苹果呀")
+    opposite = manager.add("semantic", "用户不喜欢吃苹果")
+    different_object = manager.add("semantic", "用户喜欢吃香蕉")
+
+    assert similar is first
+    assert opposite is not first
+    assert different_object is not first
+    assert manager.stats()["semantic"] == 3
+
+
+def test_load_merges_persisted_punctuation_duplicates(tmp_path: Path) -> None:
+    cfg = MemoryConfig()
+    path = tmp_path / f"{cfg.user_id}.json"
+    path.write_text(
+        json.dumps(
+            {
+                "episodic": [],
+                "semantic": [
+                    {
+                        "id": "old",
+                        "layer": "semantic",
+                        "text": "用户养了一只猫，名字叫团子",
+                        "importance": 0.9,
+                        "strength": 1.5,
+                        "created_at": 10.0,
+                        "last_accessed": 20.0,
+                        "hits": 2,
+                        "source": "extraction",
+                        "meta": {},
+                    },
+                    {
+                        "id": "new",
+                        "layer": "semantic",
+                        "text": "用户养了一只猫，名字叫团子。",
+                        "importance": 0.8,
+                        "strength": 1.0,
+                        "created_at": 30.0,
+                        "last_accessed": 40.0,
+                        "hits": 1,
+                        "source": "extraction",
+                        "meta": {},
+                    },
+                ],
+                "procedural": [],
+                "core": [],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    manager = MemoryManager(cfg, tmp_path)
+
+    assert manager.stats()["semantic"] == 1
+    item = manager.items("semantic")[0]
+    assert item.id == "old"
+    assert item.importance == 0.9
+    assert item.strength == 1.5
+    assert item.created_at == 10.0
+    assert item.last_accessed == 40.0
+    assert item.hits == 3
+    persisted = json.loads(path.read_text(encoding="utf-8"))
+    assert len(persisted["semantic"]) == 1
 
 
 def test_recall_reinforces_and_promotes_episodic(tmp_path: Path) -> None:

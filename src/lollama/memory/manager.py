@@ -3,8 +3,10 @@ from __future__ import annotations
 import json
 import os
 import time
+import unicodedata
 import uuid
 from dataclasses import asdict, dataclass, field
+from difflib import SequenceMatcher
 from pathlib import Path
 
 from lollama._logging import get_logger
@@ -21,6 +23,12 @@ LAYER_LABELS = {
     "procedural": "偏好",
     "core": "画像",
 }
+
+_DUPLICATE_IGNORED_PUNCTUATION = "。．.!！？?，,；;：:、…~～\"'“”‘’()（）[]【】{}《》<>〈〉「」『』"
+_DUPLICATE_SIMILARITY_MIN_CHARS = 6
+_DUPLICATE_SIMILARITY_THRESHOLD = 0.9
+_DUPLICATE_CONTAINMENT_MIN_RATIO = 0.72
+_NEGATION_MARKERS = frozenset("不没无非未勿别")
 
 
 @dataclass(slots=True)
@@ -67,6 +75,7 @@ class MemoryManager:
 
     def load(self) -> None:
         self._items = {layer: [] for layer in PERSISTED_LAYERS}
+        changed = False
         try:
             data = json.loads(self._file.read_text(encoding="utf-8-sig"))
         except FileNotFoundError:
@@ -80,6 +89,10 @@ class MemoryManager:
                     self._items[layer].append(MemoryItem(**raw))
                 except TypeError:
                     logger.warning("skipping malformed memory item in layer %s: %r", layer, raw)
+                    changed = True
+            changed = self._merge_duplicates(layer) or changed
+        if changed:
+            self.save()
 
     def save(self) -> None:
         self.dir.mkdir(parents=True, exist_ok=True)
@@ -223,11 +236,20 @@ class MemoryManager:
         return getattr(self.cfg.layers, layer)
 
     def _find_duplicate(self, layer: str, text: str) -> MemoryItem | None:
-        normalized = _normalize(text)
+        return _find_duplicate_in(self._items[layer], text)
+
+    def _merge_duplicates(self, layer: str) -> bool:
+        merged: list[MemoryItem] = []
+        changed = False
         for item in self._items[layer]:
-            if _normalize(item.text) == normalized:
-                return item
-        return None
+            existing = _find_duplicate_in(merged, item.text)
+            if existing is None:
+                merged.append(item)
+                continue
+            _merge_item(existing, item)
+            changed = True
+        self._items[layer] = merged
+        return changed
 
     def _reinforce(self, item: MemoryItem) -> None:
         layer_cfg = self._layer_cfg(item.layer)
@@ -273,7 +295,44 @@ class MemoryManager:
 
 
 def _normalize(text: str) -> str:
-    return "".join(text.split()).lower()
+    text = unicodedata.normalize("NFKC", text).casefold()
+    return "".join(ch for ch in text if not ch.isspace() and ch not in _DUPLICATE_IGNORED_PUNCTUATION)
+
+
+def _find_duplicate_in(items: list[MemoryItem], text: str) -> MemoryItem | None:
+    normalized = _normalize(text)
+    for item in items:
+        if _normalize(item.text) == normalized:
+            return item
+    for item in items:
+        if _is_similar_duplicate(normalized, _normalize(item.text)):
+            return item
+    return None
+
+
+def _is_similar_duplicate(left: str, right: str) -> bool:
+    if not left or not right:
+        return False
+    shorter, longer = sorted((left, right), key=len)
+    if len(shorter) < _DUPLICATE_SIMILARITY_MIN_CHARS:
+        return False
+    if _has_negation_mismatch(left, right):
+        return False
+    if shorter in longer and len(shorter) / len(longer) >= _DUPLICATE_CONTAINMENT_MIN_RATIO:
+        return True
+    return SequenceMatcher(None, left, right).ratio() >= _DUPLICATE_SIMILARITY_THRESHOLD
+
+
+def _has_negation_mismatch(left: str, right: str) -> bool:
+    return bool(_NEGATION_MARKERS & set(left)) != bool(_NEGATION_MARKERS & set(right))
+
+
+def _merge_item(existing: MemoryItem, duplicate: MemoryItem) -> None:
+    existing.importance = max(existing.importance, duplicate.importance)
+    existing.strength = min(1.5, max(existing.strength, duplicate.strength))
+    existing.created_at = min(existing.created_at, duplicate.created_at)
+    existing.last_accessed = max(existing.last_accessed, duplicate.last_accessed)
+    existing.hits += duplicate.hits
 
 
 def _is_raw_turn_memory(item: MemoryItem) -> bool:

@@ -144,3 +144,18 @@ async def test_extraction_writes_layered_memories(tmp_path: Path) -> None:
     assert stats["procedural"] == 1
     assert agent.memory.items("core")[0].text == "用户叫小明"
     await agent.close()
+
+
+async def test_extraction_punctuation_duplicate_reinforces_memory(tmp_path: Path) -> None:
+    extraction = '[{"layer":"semantic","text":"用户养了一只猫，名字叫团子。","importance":0.8}]'
+    upstream = FakeUpstream(reply="记得，你的猫叫团子。", extraction=extraction)
+    agent = make_agent(tmp_path, upstream, extraction=True)
+    existing = agent.memory.add("semantic", "用户养了一只猫，名字叫团子", importance=0.9)
+
+    await collect(agent, "你知道我养了一只猫叫什么名字吗")
+    await asyncio.gather(*agent._background, return_exceptions=True)
+
+    assert agent.memory.stats()["semantic"] == 1
+    assert agent.memory.items("semantic")[0] is existing
+    assert existing.strength > 1.0
+    await agent.close()
