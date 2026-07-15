@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, fields, is_dataclass
+import os
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +14,8 @@ class PathsConfig:
     logs_dir: str = "artifacts/logs"
     memory_dir: str = "artifacts/memory"
     workspace_dir: str = "artifacts/workspace"
+    # 技能沙盒每次执行的临时运行目录
+    skill_runs_dir: str = "artifacts/skill_runs"
 
 
 @dataclass(slots=True)
@@ -21,6 +24,7 @@ class ServiceConfig:
     port: int = 8801
     ws_path: str = "/v1/llm/ws"
     max_clients: int = 8
+    health_timeout_sec: float = 5.0
 
 
 @dataclass(slots=True)
@@ -78,12 +82,32 @@ class LayersConfig:
 
 
 @dataclass(slots=True)
+class EmbeddingConfig:
+    """可选的本地向量检索通道（OpenAI 兼容 /embeddings，如 LM Studio 加载的 embedding 模型）。"""
+
+    enabled: bool = False
+    # 留空则复用 upstream.base_url
+    base_url: str = ""
+    model: str = ""
+    api_key: str = ""
+    timeout_sec: float = 5.0
+
+
+@dataclass(slots=True)
 class RetrievalConfig:
     top_k: int = 6
     min_score: float = 0.08
     similarity_weight: float = 0.5
     importance_weight: float = 0.25
     strength_weight: float = 0.25
+    # 相关度融合的三个通道权重（按本次查询实际可用的通道归一化）：
+    # bigram 字符二元组字面匹配 / SQLite FTS5 BM25 / embedding 向量余弦
+    bigram_weight: float = 1.0
+    fts_weight: float = 0.6
+    vector_weight: float = 1.0
+    # FTS 通道最多取多少条候选
+    fts_candidates: int = 32
+    embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
 
 
 @dataclass(slots=True)
@@ -115,6 +139,8 @@ class ExtractionConfig:
 class MemoryConfig:
     enabled: bool = True
     user_id: str = "default"
+    # dashboard 只读 JSON 镜像的最小导出间隔（秒）；SQLite 才是持久化事实源
+    snapshot_min_interval_sec: float = 5.0
     layers: LayersConfig = field(default_factory=LayersConfig)
     retrieval: RetrievalConfig = field(default_factory=RetrievalConfig)
     promotion: PromotionConfig = field(default_factory=PromotionConfig)
@@ -191,6 +217,28 @@ class ToolsConfig:
 
 
 @dataclass(slots=True)
+class SkillsConfig:
+    """Agent Skill：skills 目录下每个子目录一个技能（SKILL.md + 脚本），脚本在沙盒子进程中执行。
+
+    沙盒边界 = 独立子进程（python -I）+ 环境变量白名单 + 独立运行目录 + 超时强杀
+    + 内存/进程数上限（Windows Job Object / POSIX rlimit）。它防事故不防恶意：
+    只加载可信来源的技能。
+    """
+
+    enabled: bool = True
+    # 技能目录，每个技能一个子目录，内含 SKILL.md
+    dir: str = "skills"
+    # 单次执行的默认超时（秒），SKILL.md 里可按技能覆盖
+    timeout_sec: float = 20.0
+    max_output_chars: int = 8000
+    # 沙盒进程的内存上限（MB）与最大进程数（含子进程）
+    max_memory_mb: int = 256
+    max_processes: int = 8
+    # 执行脚本用的 Python 解释器；留空用当前解释器
+    python: str = ""
+
+
+@dataclass(slots=True)
 class RuntimeConfig:
     log_level: str = "INFO"
 
@@ -203,6 +251,7 @@ class Config:
     agent: AgentConfig = field(default_factory=AgentConfig)
     memory: MemoryConfig = field(default_factory=MemoryConfig)
     tools: ToolsConfig = field(default_factory=ToolsConfig)
+    skills: SkillsConfig = field(default_factory=SkillsConfig)
     status: StatusConfig = field(default_factory=StatusConfig)
     runtime: RuntimeConfig = field(default_factory=RuntimeConfig)
 
@@ -219,6 +268,10 @@ def load_config(path: str | Path | None = None) -> Config:
         if not isinstance(data, dict):
             raise ValueError("config file must contain a mapping")
         _merge(cfg, data)
+    if api_key := os.environ.get("LOLLAMA_UPSTREAM_API_KEY"):
+        cfg.upstream.api_key = api_key
+    if embedding_key := os.environ.get("LOLLAMA_EMBEDDING_API_KEY"):
+        cfg.memory.retrieval.embedding.api_key = embedding_key
     validate_config(cfg)
     return cfg
 
@@ -244,6 +297,8 @@ def validate_config(cfg: Config) -> None:
         raise ValueError("service.ws_path must start with /")
     if cfg.service.max_clients < 1:
         raise ValueError("service.max_clients must be positive")
+    if cfg.service.health_timeout_sec <= 0:
+        raise ValueError("service.health_timeout_sec must be positive")
     if cfg.upstream.max_tokens < 1:
         raise ValueError("upstream.max_tokens must be positive")
     if cfg.upstream.timeout_sec <= 0:
@@ -269,6 +324,22 @@ def validate_config(cfg: Config) -> None:
     )
     if any(w < 0 for w in weights) or sum(weights) <= 0:
         raise ValueError("memory.retrieval weights must be >= 0 and not all zero")
+    channel_weights = (
+        cfg.memory.retrieval.bigram_weight,
+        cfg.memory.retrieval.fts_weight,
+        cfg.memory.retrieval.vector_weight,
+    )
+    if any(w < 0 for w in channel_weights) or sum(channel_weights) <= 0:
+        raise ValueError("memory.retrieval channel weights must be >= 0 and not all zero")
+    if cfg.memory.retrieval.fts_candidates < 1:
+        raise ValueError("memory.retrieval.fts_candidates must be positive")
+    if cfg.memory.snapshot_min_interval_sec < 0:
+        raise ValueError("memory.snapshot_min_interval_sec must be >= 0")
+    embedding = cfg.memory.retrieval.embedding
+    if embedding.enabled and not embedding.model:
+        raise ValueError("memory.retrieval.embedding.model is required when embedding is enabled")
+    if embedding.timeout_sec <= 0:
+        raise ValueError("memory.retrieval.embedding.timeout_sec must be positive")
     if cfg.memory.promotion.episodic_hits_to_semantic < 1:
         raise ValueError("memory.promotion.episodic_hits_to_semantic must be positive")
     if cfg.memory.forgetting.sweep_interval_sec <= 0:
@@ -279,6 +350,14 @@ def validate_config(cfg: Config) -> None:
         raise ValueError("tools.max_rounds must be positive")
     if cfg.tools.shell.timeout_sec <= 0:
         raise ValueError("tools.shell.timeout_sec must be positive")
+    if cfg.skills.timeout_sec <= 0:
+        raise ValueError("skills.timeout_sec must be positive")
+    if cfg.skills.max_output_chars < 1:
+        raise ValueError("skills.max_output_chars must be positive")
+    if cfg.skills.max_memory_mb < 1:
+        raise ValueError("skills.max_memory_mb must be positive")
+    if cfg.skills.max_processes < 1:
+        raise ValueError("skills.max_processes must be positive")
     for name in ("llm_waiting_after_sec", "llm_waiting_repeat_sec", "tool_waiting_after_sec", "tool_waiting_repeat_sec"):
         if getattr(cfg.status, name) < 0:
             raise ValueError(f"status.{name} must be >= 0 (0 disables)")

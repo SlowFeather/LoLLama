@@ -9,8 +9,9 @@ from pathlib import Path
 from ._logging import get_logger, setup_logging
 from .agent import Agent
 from .config import Config, load_config
-from .memory import MemoryManager
+from .memory import MemoryManager, build_memory
 from .service.server import RealtimeLlmService
+from .skills import load_skills, register_skill_tools
 from .tools import build_registry
 from .upstream import UpstreamClient
 
@@ -51,6 +52,8 @@ def build_parser() -> argparse.ArgumentParser:
     memory = sub.add_parser("memory", help="Inspect or manage the layered memory store")
     memory.add_argument("action", choices=["stats", "sweep", "clear", "dump"])
 
+    sub.add_parser("skills", help="List loaded agent skills")
+
     init = sub.add_parser("init-config", help="Copy the example config to a writable path")
     init.add_argument("--out", default="configs/config.yaml")
     init.add_argument("--force", action="store_true")
@@ -75,6 +78,8 @@ async def _amain(args: argparse.Namespace) -> int:
         return await _text(cfg, " ".join(args.prompt))
     if args.command == "memory":
         return _memory(cfg, args.action)
+    if args.command == "skills":
+        return _skills(cfg)
     raise AssertionError(args.command)
 
 
@@ -112,14 +117,22 @@ async def _doctor(cfg: Config) -> int:
         print("[OK] memory: disabled")
 
     registry = build_registry(cfg.tools, workspace_dir=cfg.paths.workspace_dir, memory=None)
+    if cfg.skills.enabled:
+        register_skill_tools(registry, load_skills(cfg.skills.dir), cfg=cfg.skills, runs_dir=cfg.paths.skill_runs_dir)
     print(f"[OK] tools: {', '.join(registry.names()) or 'disabled'}")
     return 0 if ok and memory_ok else 2
 
 
 async def _text(cfg: Config, prompt: str) -> int:
     upstream = UpstreamClient(cfg.upstream)
-    memory = MemoryManager(cfg.memory, cfg.paths.memory_dir) if cfg.memory.enabled else None
+    memory = (
+        build_memory(cfg.memory, cfg.paths.memory_dir, upstream_base_url=cfg.upstream.base_url)
+        if cfg.memory.enabled
+        else None
+    )
     tools = build_registry(cfg.tools, workspace_dir=cfg.paths.workspace_dir, memory=memory)
+    if cfg.skills.enabled:
+        register_skill_tools(tools, load_skills(cfg.skills.dir), cfg=cfg.skills, runs_dir=cfg.paths.skill_runs_dir)
     agent = Agent(cfg, upstream=upstream, memory=memory, tools=tools)
     try:
         async for event in agent.respond([{"role": "user", "content": prompt}]):
@@ -136,6 +149,8 @@ async def _text(cfg: Config, prompt: str) -> int:
     finally:
         await agent.close()
         await upstream.close()
+        if memory is not None:
+            await memory.aclose()
     return 0
 
 
@@ -158,6 +173,22 @@ def _memory(cfg: Config, action: str) -> int:
             print(f"== {layer} ({len(items)}) ==")
             for item in items:
                 print(f"  [{item.importance:.2f}/{item.strength:.2f} hits={item.hits}] {item.text}")
+    return 0
+
+
+def _skills(cfg: Config) -> int:
+    if not cfg.skills.enabled:
+        print("skills disabled in config")
+        return 1
+    skills = load_skills(cfg.skills.dir)
+    if not skills:
+        print(f"（{cfg.skills.dir} 下没有技能；每个技能一个子目录，内含 SKILL.md）")
+        return 0
+    for skill in skills:
+        kind = "工具" if skill.entry is not None else "仅说明"
+        params = ", ".join(skill.parameters) or "-"
+        print(f"{skill.name} [{kind}] {skill.description}")
+        print(f"  参数: {params}  超时: {skill.timeout_sec or cfg.skills.timeout_sec}s  目录: {skill.dir}")
     return 0
 
 

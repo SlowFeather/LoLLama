@@ -12,7 +12,8 @@ from websockets.exceptions import ConnectionClosed
 from lollama._logging import get_logger
 from lollama.agent import Agent
 from lollama.config import Config
-from lollama.memory import MemoryManager
+from lollama.memory import build_memory
+from lollama.skills import load_skills, register_skill_tools
 from lollama.tools import build_registry
 from lollama.upstream import UpstreamClient
 
@@ -51,15 +52,29 @@ class RealtimeLlmService:
         self.cfg = cfg
         self._started_at = time.monotonic()
         self.upstream = UpstreamClient(cfg.upstream)
-        self.memory = MemoryManager(cfg.memory, cfg.paths.memory_dir) if cfg.memory.enabled else None
+        self.memory = (
+            build_memory(cfg.memory, cfg.paths.memory_dir, upstream_base_url=cfg.upstream.base_url)
+            if cfg.memory.enabled
+            else None
+        )
         self.tools = build_registry(cfg.tools, workspace_dir=cfg.paths.workspace_dir, memory=self.memory)
+        if cfg.skills.enabled:
+            register_skill_tools(
+                self.tools,
+                load_skills(cfg.skills.dir),
+                cfg=cfg.skills,
+                runs_dir=cfg.paths.skill_runs_dir,
+            )
         self.agent = Agent(cfg, upstream=self.upstream, memory=self.memory, tools=self.tools)
         self._clients: set = set()
         self._shutdown = asyncio.Event()
         self._requests_served = 0
+        self._ready = False
+        self._last_error: str | None = "upstream health has not been checked"
 
     async def serve_forever(self) -> None:
         self.cfg.ensure_dirs()
+        await self._refresh_health()
         sweep_task = asyncio.create_task(self._sweep_loop())
         try:
             async with websockets.serve(
@@ -88,7 +103,7 @@ class RealtimeLlmService:
             await self.agent.close()
             await self.upstream.close()
             if self.memory is not None:
-                self.memory.save()
+                await self.memory.aclose()
 
     def shutdown(self) -> None:
         logger.info("shutdown requested")
@@ -136,6 +151,7 @@ class RealtimeLlmService:
         if msg_type == "ping":
             await _send_json(websocket, {"type": "pong"})
         elif msg_type == "status":
+            await self._refresh_health()
             await _send_json(websocket, self.status())
         elif msg_type == "chat":
             await self._start_chat(websocket, conn, payload)
@@ -172,7 +188,11 @@ class RealtimeLlmService:
     def status(self) -> dict:
         return {
             "type": "status",
-            "ready": True,
+            "ready": self._ready,
+            "state": "ready" if self._ready else "degraded",
+            "model_loaded": self._ready,
+            "audio_open": None,
+            "last_error": self._last_error,
             "model": self.cfg.upstream.model,
             "upstream": self.cfg.upstream.base_url,
             "tools": self.tools.names(),
@@ -181,6 +201,15 @@ class RealtimeLlmService:
             "requests_served": self._requests_served,
             "uptime_seconds": round(time.monotonic() - self._started_at, 3),
         }
+
+    async def _refresh_health(self) -> None:
+        try:
+            async with asyncio.timeout(self.cfg.service.health_timeout_sec):
+                ok, detail = await self.upstream.health()
+        except TimeoutError:
+            ok, detail = False, f"upstream health timed out after {self.cfg.service.health_timeout_sec:.1f}s"
+        self._ready = ok
+        self._last_error = None if ok else detail
 
     # ------------------------------------------------------------------- chat
 
@@ -286,13 +315,20 @@ class RealtimeLlmService:
     # ----------------------------------------------------------------- sweeps
 
     async def _sweep_loop(self) -> None:
-        if self.memory is None or not self.cfg.memory.forgetting.enabled:
+        if self.memory is None:
             return
+        # 启动时先补一轮向量（存量记忆可能还没 embedding）
+        try:
+            await self.memory.embed_pending()
+        except Exception:
+            logger.exception("initial memory embedding failed")
         interval = self.cfg.memory.forgetting.sweep_interval_sec
         while True:
             await asyncio.sleep(interval)
             try:
-                self.memory.sweep()
+                if self.cfg.memory.forgetting.enabled:
+                    self.memory.sweep()
+                await self.memory.embed_pending()
             except Exception:
                 logger.exception("memory sweep failed")
 

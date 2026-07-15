@@ -18,7 +18,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "pytest-asyncio"]
+dev = ["pytest", "pytest-asyncio", "ruff>=0.12", "mypy>=1.16", "pip-audit>=2.9"]
 
 [project.scripts]
 lollama = "lollama.cli:main"
@@ -30,3 +30,13 @@ where = ["src"]
 testpaths = ["tests"]
 pythonpath = ["src"]
 asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 120
+
+[tool.mypy]
+files = ["src/lollama/config.py", "src/lollama/memory/textutil.py", "src/lollama/memory/embedding.py"]
+ignore_missing_imports = true
+check_untyped_defs = true
+no_implicit_optional = true
+follow_imports = "skip"

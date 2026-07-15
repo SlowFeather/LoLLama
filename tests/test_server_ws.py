@@ -28,6 +28,9 @@ class SlowFakeUpstream:
     async def close(self) -> None:
         return None
 
+    async def health(self) -> tuple[bool, str]:
+        return True, "fake model available"
+
 
 @contextlib.asynccontextmanager
 async def running_service(tmp_path: Path, *, delay: float = 0.0, reply: str = "你好，我在。"):
@@ -66,6 +69,7 @@ async def test_ping_status_and_memory_commands(tmp_path: Path) -> None:
             status = await _recv_json(ws)
             assert status["type"] == "status"
             assert status["ready"] is True
+            assert {"ready", "state", "model_loaded", "audio_open", "last_error"} <= status.keys()
             assert "memory_search" in status["tools"]
 
             await ws.send(json.dumps({"type": "memory", "action": "stats"}))

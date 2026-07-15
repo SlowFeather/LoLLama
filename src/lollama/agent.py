@@ -66,7 +66,7 @@ class Agent:
     ) -> AsyncIterator[dict]:
         user_text = _last_user_text(messages)
         is_current_time_query = _is_current_time_query(user_text)
-        prompt, recalled = self._build_messages(messages, user_text)
+        prompt, recalled = await self._build_messages(messages, user_text)
         if recalled:
             event = self.make_status("memory_recall", count=recalled)
             if event is not None:
@@ -185,8 +185,14 @@ class Agent:
         return {"type": "status", "stage": stage, "announce": announce, **detail}
 
     def tool_label(self, name: str) -> str:
-        labels = {**DEFAULT_TOOL_LABELS, **self.cfg.status.tool_labels}
-        return labels.get(name, f"用一下 {name} 工具")
+        # 优先级：配置覆盖 > 工具自带播报名（如技能的 label）> 内置默认
+        override = self.cfg.status.tool_labels.get(name)
+        if override:
+            return override
+        registered = self.tools.label(name)
+        if registered:
+            return registered
+        return DEFAULT_TOOL_LABELS.get(name, f"用一下 {name} 工具")
 
     async def _stream_llm_with_waiting(self, prompt: list[dict], tools: list[dict] | None) -> AsyncIterator[dict]:
         """转发上游事件；首字迟迟不来时按配置产出 llm_waiting 心跳和 llm_first_token。"""
@@ -289,7 +295,7 @@ class Agent:
 
     # ---------------------------------------------------------------- prompt
 
-    def _build_messages(self, messages: list[dict], user_text: str) -> tuple[list[dict], int]:
+    async def _build_messages(self, messages: list[dict], user_text: str) -> tuple[list[dict], int]:
         system_parts = [self.cfg.agent.system_prompt]
         if self.cfg.agent.inject_time:
             system_parts.append(f"当前时间：{time.strftime('%Y-%m-%d %H:%M:%S %A')}")
@@ -298,7 +304,7 @@ class Agent:
             if _is_current_time_query(user_text):
                 pairs = self.memory.retrieve(_current_time_memory_query(user_text), layers=("procedural",))
             else:
-                pairs = self.memory.retrieve(user_text)
+                pairs = await self.memory.retrieve_async(user_text)
             recalled = len(pairs)
             context = self.memory.format_context(pairs)
             if context:
@@ -345,6 +351,8 @@ class Agent:
             items = await extract_memories(self.upstream, user_text, assistant_text, self.cfg.memory.extraction)
             for entry in items:
                 self.memory.add(entry["layer"], entry["text"], importance=entry["importance"], source="extraction")
+            with contextlib.suppress(Exception):
+                await self.memory.embed_pending()
             if items:
                 logger.info("extracted %d memory item(s) from turn", len(items))
                 if background_notify is not None:

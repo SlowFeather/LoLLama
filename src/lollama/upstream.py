@@ -43,8 +43,8 @@ class UpstreamClient:
             if self.cfg.model in model_ids:
                 return True, f"model available: {self.cfg.model}"
             if model_ids:
-                return True, f"upstream reachable; configured model not listed. available={', '.join(model_ids[:5])}"
-            return True, "upstream reachable; no models returned by /models"
+                return False, f"configured model not listed. available={', '.join(model_ids[:5])}"
+            return False, "upstream returned no loaded models"
         except Exception as exc:
             return False, str(exc)
 

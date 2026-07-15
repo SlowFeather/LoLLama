@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from lollama.config import MemoryConfig, ToolsConfig
 from lollama.memory import MemoryManager
 from lollama.tools import build_registry

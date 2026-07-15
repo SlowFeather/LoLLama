@@ -448,8 +448,8 @@ def _coerce_int(value, *, default: int, minimum: int, maximum: int) -> int:
     return min(maximum, max(minimum, number))
 
 
-def _memory_search(memory: MemoryManager, query: str) -> str:
-    pairs = memory.retrieve(query)
+async def _memory_search(memory: MemoryManager, query: str) -> str:
+    pairs = await memory.retrieve_async(query)
     if not pairs:
         return "没有找到相关记忆"
     return "\n".join(f"[{item.layer}] {item.text}" for item, _score in pairs)

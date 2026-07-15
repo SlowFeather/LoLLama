@@ -18,6 +18,8 @@ class Tool:
     description: str
     parameters: dict
     handler: ToolHandler
+    # 状态播报用的动词短语（如“数一下字数”）；None 则由上层回退到默认文案
+    label: str | None = None
 
 
 class ToolRegistry:
@@ -32,6 +34,10 @@ class ToolRegistry:
 
     def names(self) -> list[str]:
         return sorted(self._tools)
+
+    def label(self, name: str) -> str | None:
+        tool = self._tools.get(name)
+        return tool.label if tool is not None else None
 
     def specs(self) -> list[dict]:
         """OpenAI tools 格式的工具定义。"""
