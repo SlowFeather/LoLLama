@@ -70,6 +70,7 @@ class RealtimeLlmService:
         self._shutdown = asyncio.Event()
         self._requests_served = 0
         self._ready = False
+        self._state = "STARTING"
         self._last_error: str | None = "upstream health has not been checked"
 
     async def serve_forever(self) -> None:
@@ -189,7 +190,7 @@ class RealtimeLlmService:
         return {
             "type": "status",
             "ready": self._ready,
-            "state": "ready" if self._ready else "degraded",
+            "state": self._state,
             "model_loaded": self._ready,
             "audio_open": None,
             "last_error": self._last_error,
@@ -209,6 +210,7 @@ class RealtimeLlmService:
         except TimeoutError:
             ok, detail = False, f"upstream health timed out after {self.cfg.service.health_timeout_sec:.1f}s"
         self._ready = ok
+        self._state = "READY" if ok else "DEGRADED"
         self._last_error = None if ok else detail
 
     # ------------------------------------------------------------------- chat

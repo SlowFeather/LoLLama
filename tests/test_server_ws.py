@@ -69,6 +69,7 @@ async def test_ping_status_and_memory_commands(tmp_path: Path) -> None:
             status = await _recv_json(ws)
             assert status["type"] == "status"
             assert status["ready"] is True
+            assert status["state"] == "READY"
             assert {"ready", "state", "model_loaded", "audio_open", "last_error"} <= status.keys()
             assert "memory_search" in status["tools"]
 
